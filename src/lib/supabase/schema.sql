@@ -63,4 +63,76 @@ $$;
 -- Yeni kullanıcı tetikleyicisi
 create trigger on_auth_user_created
   after insert on auth.users
-  for each row execute procedure public.handle_new_user(); 
+  for each row execute procedure public.handle_new_user();
+
+-- Targets tablosunu güncelle
+DROP TABLE IF EXISTS public.targets CASCADE;
+
+CREATE TABLE public.targets (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  brand_id UUID REFERENCES public.brands(id),
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+  revenue DECIMAL(15,2) NOT NULL DEFAULT 0,
+  profit DECIMAL(15,2) NOT NULL DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE (brand_id, year, month)
+);
+
+-- RLS politikalarını güncelle
+ALTER TABLE public.targets ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Direktörler hedef ekleyebilir" ON public.targets;
+DROP POLICY IF EXISTS "Direktörler hedef güncelleyebilir" ON public.targets;
+DROP POLICY IF EXISTS "Direktörler hedef silebilir" ON public.targets;
+DROP POLICY IF EXISTS "Herkes hedefleri görebilir" ON public.targets;
+
+CREATE POLICY "Direktörler hedef ekleyebilir"
+  ON public.targets
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+      AND profiles.role = 'director'
+    )
+  );
+
+CREATE POLICY "Direktörler hedef güncelleyebilir"
+  ON public.targets
+  FOR UPDATE
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+      AND profiles.role = 'director'
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+      AND profiles.role = 'director'
+    )
+  );
+
+CREATE POLICY "Direktörler hedef silebilir"
+  ON public.targets
+  FOR DELETE
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+      AND profiles.role = 'director'
+    )
+  );
+
+CREATE POLICY "Herkes hedefleri görebilir"
+  ON public.targets
+  FOR SELECT
+  TO authenticated
+  USING (true); 

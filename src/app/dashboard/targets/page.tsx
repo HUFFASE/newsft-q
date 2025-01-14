@@ -4,16 +4,31 @@ import { useState, useEffect } from 'react'
 import { Plus, Edit2, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 
-interface Target {
+interface SupabaseTarget {
   id: string
   brand_id: string
   year: number
   month: number
   revenue: number
   profit: number
+  brands: {
+    id: string
+    name: string
+  } | null
+}
+
+interface Target {
+  id: string
+  brand_id: string
+  year: number
+  month: number
+  quarter?: number
+  revenue: number
+  profit: number
   brands?: {
     name: string
   }
+  brand_name?: string
 }
 
 interface QuarterData {
@@ -25,23 +40,29 @@ interface FormData {
   brand_id: string
   year: number
   quarters: {
-    [key: number]: QuarterData
+    [key: string]: QuarterData
   }
 }
 
 interface Brand {
   id: string
   name: string
+  sales_manager_id?: string
 }
 
-interface QuarterSummary {
+interface QuarterlySummary {
   revenue: number
   profit: number
   profitMargin: number
 }
 
 interface QuarterlySummaries {
-  [key: number]: QuarterSummary
+  [key: number]: QuarterlySummary
+}
+
+interface SalesManager {
+  id: string
+  full_name: string
 }
 
 const quarters = [
@@ -55,10 +76,10 @@ const initialFormData: FormData = {
   brand_id: '',
   year: new Date().getFullYear(),
   quarters: {
-    1: { revenue: 0, profit: 0 },
-    2: { revenue: 0, profit: 0 },
-    3: { revenue: 0, profit: 0 },
-    4: { revenue: 0, profit: 0 }
+    '1': { revenue: 0, profit: 0 },
+    '2': { revenue: 0, profit: 0 },
+    '3': { revenue: 0, profit: 0 },
+    '4': { revenue: 0, profit: 0 }
   }
 }
 
@@ -73,13 +94,16 @@ export default function TargetsPage() {
   const [userRole, setUserRole] = useState<string | null>(null)
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear())
   const [selectedBrandId, setSelectedBrandId] = useState<string>('')
+  const [closedQuarters, setClosedQuarters] = useState<{[key: string]: boolean}>({})
+  const [salesManagers, setSalesManagers] = useState<SalesManager[]>([])
+  const [selectedManager, setSelectedManager] = useState<string>('')
 
   const years = Array.from({ length: 7 }, (_, i) => 2024 + i)
 
   useEffect(() => {
     fetchUserRole()
     fetchTargets()
-    fetchBrands()
+    fetchSalesManagers()
   }, [])
 
   // Debug için userRole değişikliklerini izle
@@ -100,7 +124,7 @@ export default function TargetsPage() {
         brand_id: selectedTarget.brand_id,
         year: selectedTarget.year,
         quarters: {
-          [selectedTarget.month]: {
+          [Math.ceil(selectedTarget.month / 3).toString()]: {
             revenue: selectedTarget.revenue,
             profit: selectedTarget.profit
           }
@@ -110,6 +134,35 @@ export default function TargetsPage() {
       setFormData(initialFormData)
     }
   }, [selectedTarget])
+
+  useEffect(() => {
+    fetchClosedQuarters()
+  }, [selectedYear])
+
+  useEffect(() => {
+    fetchBrands()
+  }, [selectedManager])
+
+  const fetchClosedQuarters = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('actuals')
+        .select('quarter, is_closed')
+        .eq('year', selectedYear)
+        .eq('is_closed', true)
+
+      if (error) throw error
+
+      const closedQuartersMap = data.reduce((acc: {[key: string]: boolean}, curr) => {
+        acc[curr.quarter] = curr.is_closed
+        return acc
+      }, {})
+
+      setClosedQuarters(closedQuartersMap)
+    } catch (err) {
+      console.error('Error fetching closed quarters:', err)
+    }
+  }
 
   const fetchUserRole = async () => {
     try {
@@ -164,7 +217,9 @@ export default function TargetsPage() {
   const fetchTargets = async () => {
     try {
       console.log('Fetching targets...')
-      const { data, error } = await supabase
+      
+      // Hedefleri ay bazında çek
+      const { data: rawData, error } = await supabase
         .from('targets')
         .select(`
           *,
@@ -172,39 +227,81 @@ export default function TargetsPage() {
             name
           )
         `)
-        .order('year', { ascending: false })
-        .order('month', { ascending: false })
-        .order('brand_id')
+        .eq('year', selectedYear)
+        .order('month', { ascending: true })
 
       if (error) {
         console.error('Error fetching targets:', error)
         throw error
       }
 
-      console.log('Fetched targets:', data)
-      setTargets(data)
+      console.log('Raw targets data:', rawData)
+      
+      // Veriyi dönüştür ve çeyreklere ayır
+      const transformedData: Target[] = (rawData || []).map(row => {
+        // Güvenli tip dönüşümleri
+        const month = Number(row.month || 0)
+        const quarter = Math.ceil(month / 3)
+        const brandName = row.brands?.name || ''
+        
+        return {
+          id: String(row.id || ''),
+          brand_id: String(row.brand_id || ''),
+          year: Number(row.year || 0),
+          month: month,
+          quarter: quarter,
+          revenue: Number(row.revenue || 0),
+          profit: Number(row.profit || 0),
+          brands: { name: brandName },
+          brand_name: brandName
+        }
+      })
+
+      console.log('Transformed targets data:', transformedData)
+      setTargets(transformedData)
     } catch (error: any) {
-      console.error('Error in fetchTargets:', error.message)
+      const errorMessage = error.message || 'Hedefler alınırken bir hata oluştu'
+      console.error('Error in fetchTargets:', errorMessage)
+      setError(errorMessage)
+    }
+  }
+
+  const fetchSalesManagers = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, full_name')
+        .eq('role', 'sales_manager')
+        .order('full_name')
+
+      if (error) throw error
+      setSalesManagers(data || [])
+    } catch (err) {
+      console.error('Error fetching sales managers:', err)
     }
   }
 
   const fetchBrands = async () => {
     try {
-      console.log('Fetching brands...')
-      const { data, error } = await supabase
+      let query = supabase
         .from('brands')
         .select('id, name')
-        .order('name')
 
-      if (error) {
-        console.error('Error fetching brands:', error)
-        throw error
+      if (selectedManager) {
+        query = query.eq('sales_manager_id', selectedManager)
       }
 
-      console.log('Fetched brands:', data)
-      setBrands(data)
-    } catch (error: any) {
-      console.error('Error in fetchBrands:', error.message)
+      const { data, error } = await query.order('name')
+
+      if (error) throw error
+      setBrands(data || [])
+      
+      // Eğer seçili marka, yeni marka listesinde yoksa sıfırla
+      if (selectedBrandId && data && !data.find(b => b.id === selectedBrandId)) {
+        setSelectedBrandId('')
+      }
+    } catch (err) {
+      console.error('Error fetching brands:', err)
     }
   }
 
@@ -214,9 +311,38 @@ export default function TargetsPage() {
     setIsModalOpen(true)
   }
 
-  const handleEditTarget = (target: Target) => {
-    setSelectedTarget(target)
-    setIsModalOpen(true)
+  const handleEditTarget = (brandId: string) => {
+    // Seçili markanın tüm hedeflerini bul
+    const brandTargets = targets.filter(t => t.brand_id === brandId)
+    
+    if (brandTargets.length > 0) {
+      // Form verilerini hazırla
+      const quarters: { [key: string]: QuarterData } = {
+        '1': { revenue: 0, profit: 0 },
+        '2': { revenue: 0, profit: 0 },
+        '3': { revenue: 0, profit: 0 },
+        '4': { revenue: 0, profit: 0 }
+      }
+
+      // Her hedefin verilerini ilgili çeyreğe ekle
+      brandTargets.forEach(target => {
+        const quarter = Math.ceil(target.month / 3).toString()
+        quarters[quarter] = {
+          revenue: target.revenue,
+          profit: target.profit
+        }
+      })
+
+      // Form verilerini güncelle
+      setFormData({
+        brand_id: brandId,
+        year: brandTargets[0].year,
+        quarters: quarters
+      })
+
+      setSelectedTarget(null) // Tek hedef yerine tüm çeyrekleri düzenleme modu
+      setIsModalOpen(true)
+    }
   }
 
   const handleDeleteTarget = async (targetId: string) => {
@@ -244,48 +370,66 @@ export default function TargetsPage() {
     try {
       console.log('Submitting form data:', formData)
 
-      if (selectedTarget) {
-        // Güncelleme - tek çeyrek
-        const quarterData = {
-          brand_id: formData.brand_id,
-          year: formData.year,
-          revenue: formData.quarters[selectedTarget.month].revenue,
-          profit: formData.quarters[selectedTarget.month].profit
+      // Her çeyrek için güncelleme yap
+      for (const [quarter, data] of Object.entries(formData.quarters)) {
+        const quarterNumber = parseInt(quarter)
+        const monthsInQuarter = [
+          (quarterNumber - 1) * 3 + 1,
+          (quarterNumber - 1) * 3 + 2,
+          (quarterNumber - 1) * 3 + 3
+        ]
+
+        // Her ay için hedef güncelle
+        for (const month of monthsInQuarter) {
+          const monthlyData = {
+            brand_id: formData.brand_id,
+            year: formData.year,
+            month: month,
+            revenue: data.revenue / 3, // Aylık hedef (çeyrek hedefinin üçte biri)
+            profit: data.profit / 3
+          }
+
+          console.log(`Upserting target for month ${month}:`, monthlyData)
+          
+          // Önce mevcut hedefi kontrol et
+          const { data: existingData, error: checkError } = await supabase
+            .from('targets')
+            .select('id')
+            .eq('brand_id', formData.brand_id)
+            .eq('year', formData.year)
+            .eq('month', month)
+            .single()
+
+          if (checkError && checkError.code !== 'PGRST116') { // PGRST116: Kayıt bulunamadı hatası
+            console.error('Check error:', checkError)
+            throw checkError
+          }
+
+          if (existingData?.id) {
+            // Güncelleme
+            console.log(`Updating target for month ${month}:`, monthlyData)
+            const { error: updateError } = await supabase
+              .from('targets')
+              .update(monthlyData)
+              .eq('id', existingData.id)
+
+            if (updateError) {
+              console.error('Update error:', updateError)
+              throw updateError
+            }
+          } else {
+            // Yeni kayıt
+            console.log(`Inserting new target for month ${month}:`, monthlyData)
+            const { error: insertError } = await supabase
+              .from('targets')
+              .insert([monthlyData])
+
+            if (insertError) {
+              console.error('Insert error:', insertError)
+              throw insertError
+            }
+          }
         }
-
-        console.log('Updating target:', selectedTarget.id)
-        const { data, error } = await supabase
-          .from('targets')
-          .update(quarterData)
-          .eq('id', selectedTarget.id)
-          .select()
-
-        if (error) {
-          console.error('Update error:', error)
-          throw error
-        }
-        console.log('Update response:', data)
-      } else {
-        // Yeni hedefler ekleme - tüm çeyrekler
-        const insertData = Object.entries(formData.quarters).map(([quarter, data]) => ({
-          brand_id: formData.brand_id,
-          year: formData.year,
-          month: parseInt(quarter),
-          revenue: data.revenue,
-          profit: data.profit
-        }))
-
-        console.log('Inserting new targets:', insertData)
-        const { data, error } = await supabase
-          .from('targets')
-          .insert(insertData)
-          .select()
-
-        if (error) {
-          console.error('Insert error:', error)
-          throw error
-        }
-        console.log('Insert response:', data)
       }
 
       await fetchTargets()
@@ -294,25 +438,56 @@ export default function TargetsPage() {
       setSelectedTarget(null)
     } catch (error: any) {
       console.error('Submit error:', error)
-      setError(error.message)
+      console.error('Error details:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+        stack: error.stack
+      })
+      setError(error.message || 'Hedef kaydedilirken bir hata oluştu')
     } finally {
       setIsLoading(false)
     }
   }
 
   const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('tr-TR', {
+    return new Intl.NumberFormat('en-US', {
       style: 'currency',
-      currency: 'TRY'
+      currency: 'USD',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
     }).format(value)
   }
 
   const getFilteredTargets = () => {
-    return targets.filter(target => {
-      const yearMatch = selectedYear ? target.year === selectedYear : true
-      const brandMatch = selectedBrandId ? target.brand_id === selectedBrandId : true
-      return yearMatch && brandMatch
+    console.log('Filtering targets with:', {
+      selectedYear,
+      selectedBrandId,
+      selectedManager,
+      totalTargets: targets.length
     })
+
+    const filtered = targets.filter(target => {
+      const yearMatch = target.year === selectedYear
+      const brandMatch = selectedBrandId ? target.brand_id === selectedBrandId : true
+      
+      // Satış müdürü filtresi
+      const managerMatch = selectedManager 
+        ? brands.some(brand => 
+            brand.id === target.brand_id && 
+            brand.sales_manager_id === selectedManager
+          )
+        : true
+
+      const matches = yearMatch && brandMatch && managerMatch
+      console.log(`Target ${target.id} matches:`, { yearMatch, brandMatch, managerMatch, matches })
+      
+      return matches
+    })
+
+    console.log('Filtered targets result:', filtered)
+    return filtered
   }
 
   const calculateSummary = () => {
@@ -331,8 +506,10 @@ export default function TargetsPage() {
     }
   }
 
-  const calculateQuarterlySummary = (): QuarterlySummaries => {
-    const filteredTargets = getFilteredTargets()
+  const calculateQuarterlySummaries = (filteredTargets: Target[]): QuarterlySummaries => {
+    console.log('Calculating quarterly summaries for filtered targets:', filteredTargets)
+    
+    // Tüm çeyrekler için başlangıç değerlerini tanımla
     const summary: QuarterlySummaries = {
       1: { revenue: 0, profit: 0, profitMargin: 0 },
       2: { revenue: 0, profit: 0, profitMargin: 0 },
@@ -340,16 +517,113 @@ export default function TargetsPage() {
       4: { revenue: 0, profit: 0, profitMargin: 0 }
     }
 
+    // Her hedef için özeti güncelle
     filteredTargets.forEach(target => {
-      const quarter = target.month as keyof QuarterlySummaries
-      summary[quarter].revenue += target.revenue
-      summary[quarter].profit += target.profit
-      summary[quarter].profitMargin = summary[quarter].revenue > 0
-        ? (summary[quarter].profit / summary[quarter].revenue) * 100
-        : 0
+      const month = target.month || 1
+      const quarter = Math.ceil(month / 3)
+      console.log(`Processing target for month ${month} (quarter ${quarter}):`, target)
+      
+      if (quarter >= 1 && quarter <= 4) {
+        const revenue = Number(target.revenue) || 0
+        const profit = Number(target.profit) || 0
+        
+        summary[quarter].revenue += revenue
+        summary[quarter].profit += profit
+        
+        // Karlılık oranını hesapla
+        summary[quarter].profitMargin = summary[quarter].revenue > 0
+          ? (summary[quarter].profit / summary[quarter].revenue) * 100
+          : 0
+
+        console.log(`Updated summary for quarter ${quarter}:`, summary[quarter])
+      }
     })
 
+    console.log('Final quarterly summaries:', summary)
     return summary
+  }
+
+  const handleQuarterChange = (quarter: string, field: 'revenue' | 'profit', value: string) => {
+    setFormData({
+      ...formData,
+      quarters: {
+        ...formData.quarters,
+        [quarter]: {
+          ...formData.quarters[quarter],
+          [field]: parseFloat(value)
+        }
+      }
+    })
+  }
+
+  // Tüm hedeflerin toplamını hesapla
+  const calculateTotalSummary = () => {
+    console.log('Calculating total summary for all targets:', targets)
+    
+    const summary = targets.reduce((acc, target) => {
+      const revenue = Number(target.revenue) || 0
+      const profit = Number(target.profit) || 0
+      
+      acc.totalRevenue += revenue
+      acc.totalProfit += profit
+      return acc
+    }, { totalRevenue: 0, totalProfit: 0 })
+
+    const result = {
+      ...summary,
+      profitMargin: summary.totalRevenue > 0 
+        ? (summary.totalProfit / summary.totalRevenue) * 100 
+        : 0
+    }
+
+    console.log('Total summary result:', result)
+    return result
+  }
+
+  const handleDeleteBrandTargets = async (brandId: string) => {
+    if (window.confirm('Bu markanın tüm hedeflerini silmek istediğinizden emin misiniz?')) {
+      try {
+        setIsLoading(true)
+        setError(null)
+
+        console.log('Deleting targets for brand:', brandId, 'year:', selectedYear)
+
+        // Seçili markanın hedeflerini sil
+        const { data, error } = await supabase
+          .from('targets')
+          .delete()
+          .eq('brand_id', brandId)
+          .eq('year', selectedYear)
+          .select()
+
+        if (error) {
+          console.error('Delete error:', error)
+          console.error('Error details:', {
+            message: error.message,
+            code: error.code,
+            details: error.details,
+            hint: error.hint
+          })
+          throw error
+        }
+
+        console.log('Deleted targets:', data)
+
+        // Hedefleri yeniden yükle
+        await fetchTargets()
+        setSelectedBrandId('')
+        
+        // Başarı mesajı göster
+        alert('Hedefler başarıyla silindi')
+      } catch (error: any) {
+        console.error('Error deleting targets:', error)
+        setError(error.message || 'Hedefler silinirken bir hata oluştu')
+        // Hata mesajı göster
+        alert('Hedefler silinirken bir hata oluştu: ' + (error.message || 'Bilinmeyen hata'))
+      } finally {
+        setIsLoading(false)
+      }
+    }
   }
 
   return (
@@ -385,7 +659,7 @@ export default function TargetsPage() {
                     Toplam Ciro Hedefi
                   </dt>
                   <dd className="text-lg font-semibold text-gray-900">
-                    {formatCurrency(calculateSummary().totalRevenue)}
+                    {formatCurrency(calculateTotalSummary().totalRevenue)}
                   </dd>
                 </dl>
               </div>
@@ -409,7 +683,7 @@ export default function TargetsPage() {
                     Toplam Karlılık Hedefi
                   </dt>
                   <dd className="text-lg font-semibold text-gray-900">
-                    {formatCurrency(calculateSummary().totalProfit)}
+                    {formatCurrency(calculateTotalSummary().totalProfit)}
                   </dd>
                 </dl>
               </div>
@@ -433,7 +707,7 @@ export default function TargetsPage() {
                     Ortalama Karlılık Oranı
                   </dt>
                   <dd className="text-lg font-semibold text-gray-900">
-                    %{calculateSummary().profitMargin.toFixed(1)}
+                    %{calculateTotalSummary().profitMargin.toFixed(1)}
                   </dd>
                 </dl>
               </div>
@@ -442,19 +716,18 @@ export default function TargetsPage() {
         </div>
       </div>
 
-      {/* Filtreler */}
+      {/* Filtreler ve Edit Butonu */}
       <div className="bg-white p-4 rounded-lg shadow">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Yıl Filtresi
+              Yıl
             </label>
             <select
               value={selectedYear}
               onChange={(e) => setSelectedYear(parseInt(e.target.value))}
               className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             >
-              <option value="">Tüm Yıllar</option>
               {years.map((year) => (
                 <option key={year} value={year}>
                   {year}
@@ -462,22 +735,74 @@ export default function TargetsPage() {
               ))}
             </select>
           </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Marka Filtresi
+              Satış Müdürü
             </label>
             <select
-              value={selectedBrandId}
-              onChange={(e) => setSelectedBrandId(e.target.value)}
+              value={selectedManager}
+              onChange={(e) => {
+                setSelectedManager(e.target.value)
+                setSelectedBrandId('') // Satış müdürü değiştiğinde seçili markayı sıfırla
+              }}
               className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             >
-              <option value="">Tüm Markalar</option>
-              {brands.map((brand) => (
-                <option key={brand.id} value={brand.id}>
-                  {brand.name}
+              <option value="">Tüm Satış Müdürleri</option>
+              {salesManagers.map((manager) => (
+                <option key={manager.id} value={manager.id}>
+                  {manager.full_name}
                 </option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Marka
+            </label>
+            <div className="flex gap-2">
+              <select
+                value={selectedBrandId}
+                onChange={(e) => setSelectedBrandId(e.target.value)}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+              >
+                <option value="">Tüm Markalar</option>
+                {brands.map((brand) => (
+                  <option key={brand.id} value={brand.id}>
+                    {brand.name}
+                  </option>
+                ))}
+              </select>
+              {userRole === 'director' && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => selectedBrandId && handleEditTarget(selectedBrandId)}
+                    disabled={!selectedBrandId}
+                    className={`inline-flex items-center px-3 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white 
+                      ${!selectedBrandId 
+                        ? 'bg-gray-300 cursor-not-allowed' 
+                        : 'bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500'
+                      }`}
+                    title={!selectedBrandId ? 'Lütfen önce bir marka seçin' : 'Seçili markanın hedeflerini düzenle'}
+                  >
+                    <Edit2 className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() => selectedBrandId && handleDeleteBrandTargets(selectedBrandId)}
+                    disabled={!selectedBrandId}
+                    className={`inline-flex items-center px-3 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white 
+                      ${!selectedBrandId 
+                        ? 'bg-gray-300 cursor-not-allowed' 
+                        : 'bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500'
+                      }`}
+                    title={!selectedBrandId ? 'Lütfen önce bir marka seçin' : 'Seçili markanın tüm hedeflerini sil'}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -485,7 +810,7 @@ export default function TargetsPage() {
       {/* Çeyrek Bazlı Detay Kartları */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {quarters.map((quarter) => {
-          const quarterData = calculateQuarterlySummary()[quarter.value]
+          const quarterData = calculateQuarterlySummaries(getFilteredTargets())[quarter.value]
           return (
             <div key={quarter.value} className="bg-white overflow-hidden shadow rounded-lg">
               <div className="p-5">
@@ -569,31 +894,22 @@ export default function TargetsPage() {
                 </div>
               </div>
 
-              {selectedTarget ? (
-                // Tek çeyrek düzenleme
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      {quarters[selectedTarget.month - 1].label}
-                    </label>
-                    <div className="grid grid-cols-2 gap-4 mt-2">
+              {/* Tüm çeyrekler için giriş */}
+              <div className="space-y-6">
+                {Object.entries(formData.quarters).map(([quarter, data]) => (
+                  <div key={quarter} className="border-t pt-4">
+                    <h3 className="text-lg font-medium text-gray-900 mb-4">
+                      {quarter}. Çeyrek
+                    </h3>
+                    <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="block text-sm font-medium text-gray-700">
                           Ciro Hedefi (TL)
                         </label>
                         <input
                           type="number"
-                          value={formData.quarters[selectedTarget.month].revenue}
-                          onChange={(e) => setFormData({
-                            ...formData,
-                            quarters: {
-                              ...formData.quarters,
-                              [selectedTarget.month]: {
-                                ...formData.quarters[selectedTarget.month],
-                                revenue: parseFloat(e.target.value)
-                              }
-                            }
-                          })}
+                          value={data.revenue}
+                          onChange={(e) => handleQuarterChange(quarter, 'revenue', e.target.value)}
                           className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                           required
                           min={0}
@@ -606,17 +922,8 @@ export default function TargetsPage() {
                         </label>
                         <input
                           type="number"
-                          value={formData.quarters[selectedTarget.month].profit}
-                          onChange={(e) => setFormData({
-                            ...formData,
-                            quarters: {
-                              ...formData.quarters,
-                              [selectedTarget.month]: {
-                                ...formData.quarters[selectedTarget.month],
-                                profit: parseFloat(e.target.value)
-                              }
-                            }
-                          })}
+                          value={data.profit}
+                          onChange={(e) => handleQuarterChange(quarter, 'profit', e.target.value)}
                           className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                           required
                           min={0}
@@ -625,87 +932,25 @@ export default function TargetsPage() {
                       </div>
                     </div>
                   </div>
-                </div>
-              ) : (
-                // Tüm çeyrekler için giriş
-                <div className="space-y-6">
-                  {quarters.map((quarter) => (
-                    <div key={quarter.value} className="p-4 bg-gray-50 rounded-lg">
-                      <label className="block text-sm font-medium text-gray-700 mb-3">
-                        {quarter.label}
-                      </label>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700">
-                            Ciro Hedefi (TL)
-                          </label>
-                          <input
-                            type="number"
-                            value={formData.quarters[quarter.value].revenue}
-                            onChange={(e) => setFormData({
-                              ...formData,
-                              quarters: {
-                                ...formData.quarters,
-                                [quarter.value]: {
-                                  ...formData.quarters[quarter.value],
-                                  revenue: parseFloat(e.target.value)
-                                }
-                              }
-                            })}
-                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                            required
-                            min={0}
-                            step="0.01"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700">
-                            Karlılık Hedefi (TL)
-                          </label>
-                          <input
-                            type="number"
-                            value={formData.quarters[quarter.value].profit}
-                            onChange={(e) => setFormData({
-                              ...formData,
-                              quarters: {
-                                ...formData.quarters,
-                                [quarter.value]: {
-                                  ...formData.quarters[quarter.value],
-                                  profit: parseFloat(e.target.value)
-                                }
-                              }
-                            })}
-                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-                            required
-                            min={0}
-                            step="0.01"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                ))}
+              </div>
 
-              {error && (
-                <div className="text-red-600 text-sm">{error}</div>
-              )}
               <div className="flex justify-end space-x-3">
                 <button
                   type="button"
                   onClick={() => {
                     setIsModalOpen(false)
-                    setFormData(initialFormData)
                     setSelectedTarget(null)
+                    setFormData(initialFormData)
                   }}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
                 >
                   İptal
                 </button>
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md shadow-sm disabled:opacity-50"
+                  className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700"
                 >
                   {isLoading ? 'Kaydediliyor...' : 'Kaydet'}
                 </button>

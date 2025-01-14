@@ -78,6 +78,7 @@ export default function ForecastPage() {
   const [selectedBrandId, setSelectedBrandId] = useState<string>('')
   const [salesManagers, setSalesManagers] = useState<SalesManager[]>([])
   const [selectedManager, setSelectedManager] = useState<string>('')
+  const [closedQuarters, setClosedQuarters] = useState<{[key: string]: boolean}>({})
 
   useEffect(() => {
     fetchUserRole()
@@ -111,6 +112,10 @@ export default function ForecastPage() {
   // Yıl değiştiğinde verileri yeniden yükle
   useEffect(() => {
     fetchForecasts()
+  }, [selectedYear])
+
+  useEffect(() => {
+    fetchClosedQuarters()
   }, [selectedYear])
 
   const fetchUserRole = async () => {
@@ -400,6 +405,27 @@ export default function ForecastPage() {
   const totalSummary = calculateTotalSummary(forecasts)
   const filteredQuarterlySummary = calculateFilteredSummary(forecasts)
 
+  const fetchClosedQuarters = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('actuals')
+        .select('quarter, is_closed')
+        .eq('year', selectedYear)
+        .eq('is_closed', true)
+
+      if (error) throw error
+
+      const closedQuartersMap = data.reduce((acc: {[key: string]: boolean}, curr) => {
+        acc[curr.quarter] = curr.is_closed
+        return acc
+      }, {})
+
+      setClosedQuarters(closedQuartersMap)
+    } catch (err) {
+      console.error('Error fetching closed quarters:', err)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Özet Kartları - Genel Toplam */}
@@ -567,53 +593,57 @@ export default function ForecastPage() {
               </div>
 
               <div className="space-y-4">
-                {Object.entries(formData.quarters).map(([quarter, data]) => (
-                  <div key={quarter} className="bg-gray-50 p-4 rounded-lg">
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">
-                      {quarter}. Çeyrek
-                    </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700">
-                          Ciro Forecast
-                        </label>
-                        <div className="mt-1 relative rounded-md shadow-sm">
+                {Object.entries(formData.quarters).map(([quarter, data]) => {
+                  const isQuarterClosed = closedQuarters[quarter]
+                  
+                  return (
+                    <div key={quarter} className="bg-gray-50 p-4 rounded-lg">
+                      <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-lg font-medium text-gray-900">
+                          {quarter}. Çeyrek
+                        </h3>
+                        {isQuarterClosed && (
+                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
+                            Kapandı
+                          </span>
+                        )}
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            Ciro Hedefi (TL)
+                          </label>
                           <input
                             type="number"
                             value={data.revenue}
                             onChange={(e) => handleInputChange(parseInt(quarter), 'revenue', e.target.value)}
-                            className="block w-full rounded-md border-gray-300 pl-3 pr-12 focus:border-indigo-500 focus:ring-indigo-500"
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                             required
-                            min="0"
-                            step="1000"
+                            min={0}
+                            step="0.01"
+                            disabled={isQuarterClosed}
                           />
-                          <div className="absolute inset-y-0 right-0 flex items-center pr-3">
-                            <span className="text-gray-500 sm:text-sm">₺</span>
-                          </div>
                         </div>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700">
-                          Karlılık Forecast
-                        </label>
-                        <div className="mt-1 relative rounded-md shadow-sm">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            Karlılık Hedefi (TL)
+                          </label>
                           <input
                             type="number"
                             value={data.profit}
                             onChange={(e) => handleInputChange(parseInt(quarter), 'profit', e.target.value)}
-                            className="block w-full rounded-md border-gray-300 pl-3 pr-12 focus:border-indigo-500 focus:ring-indigo-500"
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                             required
-                            min="0"
-                            step="1000"
+                            min={0}
+                            step="0.01"
+                            disabled={isQuarterClosed}
                           />
-                          <div className="absolute inset-y-0 right-0 flex items-center pr-3">
-                            <span className="text-gray-500 sm:text-sm">₺</span>
-                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
 
               {error && (

@@ -2,20 +2,24 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import { Plus } from 'lucide-react'
+import { Plus, Pencil, Trash2 } from 'lucide-react'
 
 interface ActualsData {
   id: number
+  brand_id: string
   year: number
-  month: number
+  quarter: number
   revenue: number
   profit: number
-  brand_id: number
+  is_closed: boolean
   brand_name?: string
+  brands?: {
+    name: string
+  }
 }
 
 interface Brand {
-  id: number
+  id: string
   name: string
 }
 
@@ -27,7 +31,7 @@ interface SalesManager {
 export default function ActualsPage() {
   const currentYear = new Date().getFullYear()
   const [selectedYear, setSelectedYear] = useState<number>(currentYear)
-  const [selectedBrand, setSelectedBrand] = useState<number | null>(null)
+  const [selectedBrand, setSelectedBrand] = useState<string | null>(null)
   const [selectedManager, setSelectedManager] = useState<string | null>(null)
   const [brands, setBrands] = useState<Brand[]>([])
   const [salesManagers, setSalesManagers] = useState<SalesManager[]>([])
@@ -39,9 +43,10 @@ export default function ActualsPage() {
   const [formData, setFormData] = useState({
     brand_id: '',
     year: currentYear,
-    month: 1,
+    quarter: 1,
     revenue: 0,
-    profit: 0
+    profit: 0,
+    is_closed: false
   })
 
   // İlk yüklemede ve yıl değiştiğinde tüm verileri getir
@@ -84,7 +89,7 @@ export default function ActualsPage() {
         .from('actuals')
         .select('*, brands(name)')
         .eq('year', selectedYear)
-        .order('month')
+        .order('quarter')
 
       if (actualsError) throw actualsError
 
@@ -165,24 +170,89 @@ export default function ActualsPage() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    
+    if (userRole !== 'director') {
+      setError('Bu işlemi yapmak için yetkiniz yok.')
+      return
+    }
+
     try {
-      const { data, error } = await supabase
+      // Aynı çeyrek için daha önce kayıt var mı kontrol et
+      const { data: existingData, error: checkError } = await supabase
         .from('actuals')
-        .insert([
-          {
+        .select('id')
+        .eq('brand_id', formData.brand_id)
+        .eq('year', formData.year)
+        .eq('quarter', formData.quarter)
+        .single()
+
+      if (checkError && checkError.code !== 'PGRST116') throw checkError // PGRST116: No rows returned
+
+      if (existingData) {
+        // Güncelleme yap
+        const { error: updateError } = await supabase
+          .from('actuals')
+          .update({
+            revenue: formData.revenue,
+            profit: formData.profit,
+            is_closed: formData.is_closed
+          })
+          .eq('id', existingData.id)
+
+        if (updateError) throw updateError
+      } else {
+        // Yeni kayıt ekle
+        const { error: insertError } = await supabase
+          .from('actuals')
+          .insert({
             brand_id: formData.brand_id,
             year: formData.year,
-            month: formData.month,
+            quarter: formData.quarter,
             revenue: formData.revenue,
-            profit: formData.profit
-          }
-        ])
+            profit: formData.profit,
+            is_closed: formData.is_closed
+          })
+
+        if (insertError) throw insertError
+      }
+
+      await fetchAllData()
+      setIsModalOpen(false)
+      setError(null)
+    } catch (err: any) {
+      console.error('Error adding/updating actual:', err.message)
+      setError('Veri kaydedilirken bir hata oluştu: ' + err.message)
+    }
+  }
+
+  const handleEdit = (data: ActualsData) => {
+    setFormData({
+      brand_id: data.brand_id,
+      year: data.year,
+      quarter: data.quarter,
+      revenue: data.revenue,
+      profit: data.profit,
+      is_closed: data.is_closed
+    })
+    setIsModalOpen(true)
+  }
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Bu kaydı silmek istediğinizden emin misiniz?')) {
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from('actuals')
+        .delete()
+        .eq('id', id)
 
       if (error) throw error
-      fetchAllData()
-      setIsModalOpen(false)
+
+      await fetchAllData()
     } catch (err: any) {
-      console.error('Error adding actual:', err.message)
+      setError('Veri silinirken bir hata oluştu: ' + err.message)
     }
   }
 
@@ -266,7 +336,7 @@ export default function ActualsPage() {
             </label>
             <select
               value={selectedBrand || ''}
-              onChange={(e) => setSelectedBrand(e.target.value ? Number(e.target.value) : null)}
+              onChange={(e) => setSelectedBrand(e.target.value || null)}
               className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
             >
               <option value="">Tüm Markalar</option>
@@ -318,16 +388,16 @@ export default function ActualsPage() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700">Ay</label>
+                <label className="block text-sm font-medium text-gray-700">Çeyrek</label>
                 <select
-                  value={formData.month}
-                  onChange={(e) => setFormData({ ...formData, month: Number(e.target.value) })}
+                  value={formData.quarter}
+                  onChange={(e) => setFormData({ ...formData, quarter: Number(e.target.value) })}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                   required
                 >
-                  {Array.from({ length: 12 }, (_, i) => i + 1).map((month) => (
-                    <option key={month} value={month}>
-                      {month}. Ay
+                  {[1, 2, 3, 4].map((quarter) => (
+                    <option key={quarter} value={quarter}>
+                      {quarter}. Çeyrek
                     </option>
                   ))}
                 </select>
@@ -352,6 +422,20 @@ export default function ActualsPage() {
                   required
                 />
               </div>
+              {userRole === 'director' && (
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    id="is_closed"
+                    checked={formData.is_closed}
+                    onChange={(e) => setFormData({ ...formData, is_closed: e.target.checked })}
+                    className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="is_closed" className="ml-2 block text-sm text-gray-900">
+                    Çeyrek Kapandı
+                  </label>
+                </div>
+              )}
               <div className="flex justify-end space-x-3 mt-6">
                 <button
                   type="button"
@@ -378,49 +462,56 @@ export default function ActualsPage() {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Ay
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Marka
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Ciro
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Karlılık
-                </th>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Karlılık Oranı
-                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Marka</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Çeyrek</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Gelir</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Kâr</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Durum</th>
+                {userRole === 'director' && (
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">İşlemler</th>
+                )}
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {filteredData.map((actual) => {
-                const profitMargin = actual.revenue > 0 
-                  ? (actual.profit / actual.revenue) * 100 
-                  : 0
-
-                return (
-                  <tr key={actual.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {actual.month}
+              {filteredData.map((actual) => (
+                <tr key={actual.id}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{actual.brand_name}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{actual.quarter}. Çeyrek</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{actual.revenue.toLocaleString('tr-TR')} ₺</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{actual.profit.toLocaleString('tr-TR')} ₺</td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    {actual.is_closed ? (
+                      <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                        Kapandı
+                      </span>
+                    ) : (
+                      <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
+                        Açık
+                      </span>
+                    )}
+                  </td>
+                  {userRole === 'director' && (
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={() => handleEdit(actual)}
+                          className="text-indigo-600 hover:text-indigo-900"
+                          title="Düzenle"
+                        >
+                          <Pencil className="h-5 w-5" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(actual.id)}
+                          className="text-red-600 hover:text-red-900"
+                          title="Sil"
+                        >
+                          <Trash2 className="h-5 w-5" />
+                        </button>
+                      </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {actual.brand_name}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {actual.revenue.toLocaleString('tr-TR')} ₺
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {actual.profit.toLocaleString('tr-TR')} ₺
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      %{profitMargin.toFixed(2)}
-                    </td>
-                  </tr>
-                )
-              })}
+                  )}
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
