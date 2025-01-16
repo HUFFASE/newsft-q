@@ -1,7 +1,6 @@
-   [build]
-   command = "npm cache clean --force && npm install --force && npm run build"
-   publish = ".next"
+[build]
+  command = "npm run build" 
+  publish = ".next"
 
-   [build.environment]
-   NODE_VERSION = "22.12.0"
-   NPM_FLAGS = "--legacy-peer-deps --force"
+[build.environment]
+  NODE_VERSION = "22.12.0" 
