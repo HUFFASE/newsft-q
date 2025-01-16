@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react'
 import { Plus, Edit2, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { read, utils, write } from 'xlsx'
+import { toast } from 'react-hot-toast'
 
 interface SupabaseTarget {
   id: string
@@ -21,12 +23,12 @@ interface Target {
   id: string
   brand_id: string
   year: number
-  month: number
-  quarter?: number
+  quarter: number
   revenue: number
   profit: number
   brands?: {
     name: string
+    sales_manager_id?: string
   }
   brand_name?: string
 }
@@ -63,6 +65,22 @@ interface QuarterlySummaries {
 interface SalesManager {
   id: string
   full_name: string
+}
+
+interface ExcelRow {
+  'Marka Adı': string;
+  'Yıl': string | number;
+  'Çeyrek': string | number;
+  'Gelir': string | number;
+  'Kar': string | number;
+}
+
+interface TemplateRow {
+  'Marka Adı': string;
+  'Yıl': number;
+  'Çeyrek': number;
+  'Gelir': string | number;
+  'Kar': string | number;
 }
 
 const quarters = [
@@ -124,7 +142,7 @@ export default function TargetsPage() {
         brand_id: selectedTarget.brand_id,
         year: selectedTarget.year,
         quarters: {
-          [Math.ceil(selectedTarget.month / 3).toString()]: {
+          [Math.ceil(selectedTarget.quarter / 3).toString()]: {
             revenue: selectedTarget.revenue,
             profit: selectedTarget.profit
           }
@@ -140,7 +158,15 @@ export default function TargetsPage() {
   }, [selectedYear])
 
   useEffect(() => {
-    fetchBrands()
+    if (selectedManager) {
+      // Seçili satış müdürünün markalarını getir
+      fetchBrands()
+      // Seçili markayı sıfırla
+      setSelectedBrandId('')
+    } else {
+      // Tüm markaları getir
+      fetchBrands()
+    }
   }, [selectedManager])
 
   const fetchClosedQuarters = async () => {
@@ -216,19 +242,30 @@ export default function TargetsPage() {
 
   const fetchTargets = async () => {
     try {
-      console.log('Fetching targets...')
+      console.log('Fetching targets with filters:', {
+        year: selectedYear,
+        salesManager: selectedManager
+      })
       
-      // Hedefleri ay bazında çek
-      const { data: rawData, error } = await supabase
+      let query = supabase
         .from('targets')
         .select(`
           *,
           brands (
-            name
+            id,
+            name,
+            sales_manager_id
           )
         `)
         .eq('year', selectedYear)
-        .order('month', { ascending: true })
+        .order('quarter', { ascending: true })
+
+      // Satış müdürü filtresi
+      if (selectedManager) {
+        query = query.eq('brands.sales_manager_id', selectedManager)
+      }
+
+      const { data: rawData, error } = await query
 
       if (error) {
         console.error('Error fetching targets:', error)
@@ -237,23 +274,20 @@ export default function TargetsPage() {
 
       console.log('Raw targets data:', rawData)
       
-      // Veriyi dönüştür ve çeyreklere ayır
+      // Veriyi dönüştür
       const transformedData: Target[] = (rawData || []).map(row => {
-        // Güvenli tip dönüşümleri
-        const month = Number(row.month || 0)
-        const quarter = Math.ceil(month / 3)
-        const brandName = row.brands?.name || ''
-        
         return {
           id: String(row.id || ''),
           brand_id: String(row.brand_id || ''),
           year: Number(row.year || 0),
-          month: month,
-          quarter: quarter,
+          quarter: Number(row.quarter || 0),
           revenue: Number(row.revenue || 0),
           profit: Number(row.profit || 0),
-          brands: { name: brandName },
-          brand_name: brandName
+          brands: row.brands ? {
+            name: String(row.brands.name || ''),
+            sales_manager_id: row.brands.sales_manager_id ? String(row.brands.sales_manager_id) : undefined
+          } : undefined,
+          brand_name: row.brands?.name ? String(row.brands.name) : undefined
         }
       })
 
@@ -326,8 +360,7 @@ export default function TargetsPage() {
 
       // Her hedefin verilerini ilgili çeyreğe ekle
       brandTargets.forEach(target => {
-        const quarter = Math.ceil(target.month / 3).toString()
-        quarters[quarter] = {
+        quarters[target.quarter.toString()] = {
           revenue: target.revenue,
           profit: target.profit
         }
@@ -340,7 +373,7 @@ export default function TargetsPage() {
         quarters: quarters
       })
 
-      setSelectedTarget(null) // Tek hedef yerine tüm çeyrekleri düzenleme modu
+      setSelectedTarget(null)
       setIsModalOpen(true)
     }
   }
@@ -370,64 +403,52 @@ export default function TargetsPage() {
     try {
       console.log('Submitting form data:', formData)
 
-      // Her çeyrek için güncelleme yap
+      // Her çeyrek için hedef ekle/güncelle
       for (const [quarter, data] of Object.entries(formData.quarters)) {
-        const quarterNumber = parseInt(quarter)
-        const monthsInQuarter = [
-          (quarterNumber - 1) * 3 + 1,
-          (quarterNumber - 1) * 3 + 2,
-          (quarterNumber - 1) * 3 + 3
-        ]
+        const targetData = {
+          brand_id: formData.brand_id,
+          year: formData.year,
+          quarter: parseInt(quarter),
+          revenue: data.revenue,
+          profit: data.profit
+        }
 
-        // Her ay için hedef güncelle
-        for (const month of monthsInQuarter) {
-          const monthlyData = {
-            brand_id: formData.brand_id,
-            year: formData.year,
-            month: month,
-            revenue: data.revenue / 3, // Aylık hedef (çeyrek hedefinin üçte biri)
-            profit: data.profit / 3
-          }
+        console.log(`Upserting target for quarter ${quarter}:`, targetData)
+        
+        // Önce mevcut hedefi kontrol et
+        const { data: existingData, error: checkError } = await supabase
+          .from('targets')
+          .select('id')
+          .eq('brand_id', formData.brand_id)
+          .eq('year', formData.year)
+          .eq('quarter', parseInt(quarter))
+          .single()
 
-          console.log(`Upserting target for month ${month}:`, monthlyData)
-          
-          // Önce mevcut hedefi kontrol et
-          const { data: existingData, error: checkError } = await supabase
+        if (checkError && checkError.code !== 'PGRST116') {
+          console.error('Check error:', checkError)
+          throw checkError
+        }
+
+        if (existingData?.id) {
+          // Güncelleme
+          const { error: updateError } = await supabase
             .from('targets')
-            .select('id')
-            .eq('brand_id', formData.brand_id)
-            .eq('year', formData.year)
-            .eq('month', month)
-            .single()
+            .update(targetData)
+            .eq('id', existingData.id)
 
-          if (checkError && checkError.code !== 'PGRST116') { // PGRST116: Kayıt bulunamadı hatası
-            console.error('Check error:', checkError)
-            throw checkError
+          if (updateError) {
+            console.error('Update error:', updateError)
+            throw updateError
           }
+        } else {
+          // Yeni kayıt
+          const { error: insertError } = await supabase
+            .from('targets')
+            .insert([targetData])
 
-          if (existingData?.id) {
-            // Güncelleme
-            console.log(`Updating target for month ${month}:`, monthlyData)
-            const { error: updateError } = await supabase
-              .from('targets')
-              .update(monthlyData)
-              .eq('id', existingData.id)
-
-            if (updateError) {
-              console.error('Update error:', updateError)
-              throw updateError
-            }
-          } else {
-            // Yeni kayıt
-            console.log(`Inserting new target for month ${month}:`, monthlyData)
-            const { error: insertError } = await supabase
-              .from('targets')
-              .insert([monthlyData])
-
-            if (insertError) {
-              console.error('Insert error:', insertError)
-              throw insertError
-            }
+          if (insertError) {
+            console.error('Insert error:', insertError)
+            throw insertError
           }
         }
       }
@@ -438,13 +459,6 @@ export default function TargetsPage() {
       setSelectedTarget(null)
     } catch (error: any) {
       console.error('Submit error:', error)
-      console.error('Error details:', {
-        message: error.message,
-        code: error.code,
-        details: error.details,
-        hint: error.hint,
-        stack: error.stack
-      })
       setError(error.message || 'Hedef kaydedilirken bir hata oluştu')
     } finally {
       setIsLoading(false)
@@ -468,26 +482,35 @@ export default function TargetsPage() {
       totalTargets: targets.length
     })
 
-    const filtered = targets.filter(target => {
+    return targets.filter(target => {
+      // Yıl filtresi
       const yearMatch = target.year === selectedYear
-      const brandMatch = selectedBrandId ? target.brand_id === selectedBrandId : true
       
-      // Satış müdürü filtresi
+      // Satış müdürü filtresi - eğer seçili ise önce bunu kontrol et
       const managerMatch = selectedManager 
-        ? brands.some(brand => 
-            brand.id === target.brand_id && 
-            brand.sales_manager_id === selectedManager
-          )
+        ? target.brands?.sales_manager_id === selectedManager
         : true
+      
+      // Marka filtresi - sadece satış müdürü filtresinden geçen markalar için kontrol et
+      const brandMatch = selectedBrandId 
+        ? target.brand_id === selectedBrandId && managerMatch
+        : managerMatch
 
-      const matches = yearMatch && brandMatch && managerMatch
-      console.log(`Target ${target.id} matches:`, { yearMatch, brandMatch, managerMatch, matches })
+      const matches = yearMatch && brandMatch
+      console.log(`Target ${target.id} matches:`, { 
+        yearMatch, 
+        brandMatch, 
+        managerMatch, 
+        matches,
+        target: {
+          year: target.year,
+          brand_id: target.brand_id,
+          sales_manager_id: target.brands?.sales_manager_id
+        }
+      })
       
       return matches
     })
-
-    console.log('Filtered targets result:', filtered)
-    return filtered
   }
 
   const calculateSummary = () => {
@@ -519,14 +542,20 @@ export default function TargetsPage() {
 
     // Her hedef için özeti güncelle
     filteredTargets.forEach(target => {
-      const month = target.month || 1
-      const quarter = Math.ceil(month / 3)
-      console.log(`Processing target for month ${month} (quarter ${quarter}):`, target)
+      const quarter = target.quarter
+      console.log(`Processing target for quarter ${quarter}:`, target)
       
       if (quarter >= 1 && quarter <= 4) {
-        const revenue = Number(target.revenue) || 0
-        const profit = Number(target.profit) || 0
+        // Sayısal değerleri güvenli bir şekilde dönüştür
+        const revenue = typeof target.revenue === 'string' ? parseFloat(target.revenue) : Number(target.revenue) || 0
+        const profit = typeof target.profit === 'string' ? parseFloat(target.profit) : Number(target.profit) || 0
         
+        console.log('Converted values:', {
+          revenue: revenue,
+          profit: profit
+        })
+        
+        // Toplamları güncelle
         summary[quarter].revenue += revenue
         summary[quarter].profit += profit
         
@@ -558,12 +587,21 @@ export default function TargetsPage() {
 
   // Tüm hedeflerin toplamını hesapla
   const calculateTotalSummary = () => {
-    console.log('Calculating total summary for all targets:', targets)
+    console.log('Calculating total summary for filtered targets')
+    const filteredTargets = getFilteredTargets()
     
-    const summary = targets.reduce((acc, target) => {
-      const revenue = Number(target.revenue) || 0
-      const profit = Number(target.profit) || 0
+    const summary = filteredTargets.reduce((acc, target) => {
+      // Sayısal değerleri güvenli bir şekilde dönüştür
+      const revenue = typeof target.revenue === 'string' ? parseFloat(target.revenue) : Number(target.revenue) || 0
+      const profit = typeof target.profit === 'string' ? parseFloat(target.profit) : Number(target.profit) || 0
       
+      console.log('Processing target:', {
+        id: target.id,
+        revenue: revenue,
+        profit: profit
+      })
+      
+      // Toplamları güncelle
       acc.totalRevenue += revenue
       acc.totalProfit += profit
       return acc
@@ -626,6 +664,160 @@ export default function TargetsPage() {
     }
   }
 
+  const handleExcelUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    try {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = read(data, { type: 'array' });
+          const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+          const jsonData = utils.sheet_to_json(worksheet) as ExcelRow[];
+
+          for (const row of jsonData) {
+            // Marka ID'sini bul
+            const { data: brand, error: brandError } = await supabase
+              .from('brands')
+              .select('id')
+              .eq('name', row['Marka Adı'])
+              .single();
+
+            if (brandError) {
+              console.error('Marka arama hatası:', brandError);
+              toast.error(`Marka arama hatası: ${row['Marka Adı']}`);
+              continue;
+            }
+
+            if (!brand?.id) {
+              console.error(`Marka bulunamadı: ${row['Marka Adı']}`);
+              toast.error(`Marka bulunamadı: ${row['Marka Adı']}`);
+              continue;
+            }
+
+            const year = typeof row['Yıl'] === 'string' ? parseInt(row['Yıl']) : row['Yıl'];
+            const quarter = typeof row['Çeyrek'] === 'string' ? parseInt(row['Çeyrek']) : row['Çeyrek'];
+            const revenue = typeof row['Gelir'] === 'string' ? parseFloat(row['Gelir']) : row['Gelir'];
+            const profit = typeof row['Kar'] === 'string' ? parseFloat(row['Kar']) : row['Kar'];
+
+            // Mevcut hedefi kontrol et
+            const { data: existingTarget, error: checkError } = await supabase
+              .from('targets')
+              .select('id')
+              .eq('brand_id', brand.id)
+              .eq('year', year)
+              .eq('quarter', quarter)
+              .single();
+
+            if (checkError && checkError.code !== 'PGRST116') {
+              console.error('Hedef kontrol hatası:', checkError);
+              toast.error(`Hedef kontrol hatası: ${row['Marka Adı']}`);
+              continue;
+            }
+
+            const target = {
+              brand_id: brand.id,
+              year,
+              quarter,
+              revenue,
+              profit
+            };
+
+            let error;
+            if (existingTarget?.id) {
+              // Güncelleme yap
+              const { error: updateError } = await supabase
+                .from('targets')
+                .update(target)
+                .eq('id', existingTarget.id);
+              error = updateError;
+            } else {
+              // Yeni kayıt ekle
+              const { error: insertError } = await supabase
+                .from('targets')
+                .insert([target]);
+              error = insertError;
+            }
+
+            if (error) {
+              console.error('Hedef kaydetme hatası:', error);
+              toast.error(`Hedef kaydedilirken hata: ${row['Marka Adı']} - ${error.message}`);
+              continue;
+            }
+          }
+
+          await fetchTargets();
+          toast.success('Hedefler başarıyla yüklendi');
+        } catch (error: any) {
+          console.error('Excel verisi işlenirken hata:', error);
+          toast.error(`Excel verisi işlenirken hata: ${error.message}`);
+        }
+      };
+
+      reader.readAsArrayBuffer(file);
+    } catch (error: any) {
+      console.error('Dosya yüklenirken hata:', error);
+      toast.error(`Dosya yüklenirken hata: ${error.message}`);
+    }
+  };
+
+  const generateExcelTemplate = async () => {
+    try {
+      // Tüm markaları çek
+      const { data: brands, error: brandsError } = await supabase
+        .from('brands')
+        .select('name')
+        .order('name');
+
+      if (brandsError) throw brandsError;
+
+      // Her marka için 4 çeyreklik veri oluştur
+      const templateData: TemplateRow[] = [];
+      const currentYear = new Date().getFullYear();
+
+      brands?.forEach(brand => {
+        for (let quarter = 1; quarter <= 4; quarter++) {
+          templateData.push({
+            'Marka Adı': brand.name,
+            'Yıl': currentYear,
+            'Çeyrek': quarter,
+            'Gelir': '',
+            'Kar': ''
+          });
+        }
+      });
+
+      // Excel dosyası oluştur
+      const ws = utils.json_to_sheet(templateData);
+      const wb = utils.book_new();
+      utils.book_append_sheet(wb, ws, 'Hedefler');
+
+      // Dosyayı indir
+      const excelBuffer = write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `hedefler_sablonu_${currentYear}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast.success('Şablon başarıyla oluşturuldu');
+    } catch (error) {
+      console.error('Şablon oluşturulurken hata:', error);
+      toast.error('Şablon oluşturulurken bir hata oluştu');
+    }
+  };
+
+  // Satış müdürü değiştiğinde hedefleri yeniden yükle
+  useEffect(() => {
+    fetchTargets()
+  }, [selectedManager, selectedYear])
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -639,6 +831,25 @@ export default function TargetsPage() {
             Hedef Ekle
           </button>
         )}
+      </div>
+
+      <div className="mb-4 flex gap-2">
+        <label htmlFor="excel-upload" className="inline-block px-4 py-2 bg-green-600 text-white rounded-md cursor-pointer hover:bg-green-700">
+          Excel'den Yükle
+        </label>
+        <input
+          id="excel-upload"
+          type="file"
+          accept=".xlsx,.xls"
+          onChange={handleExcelUpload}
+          className="hidden"
+        />
+        <button
+          onClick={generateExcelTemplate}
+          className="px-4 py-2 bg-blue-600 text-white rounded-md cursor-pointer hover:bg-blue-700"
+        >
+          Örnek Şablon İndir
+        </button>
       </div>
 
       {/* Özet Kartları */}

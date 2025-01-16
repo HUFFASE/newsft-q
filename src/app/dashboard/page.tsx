@@ -47,6 +47,7 @@ interface ActualsData {
 interface Brand {
   id: number
   name: string
+  sales_manager_id?: string
 }
 
 interface SalesManager {
@@ -54,74 +55,282 @@ interface SalesManager {
   full_name: string
 }
 
+interface Target {
+  id: number
+  brand_id: number
+  year: number
+  quarter: number
+  revenue: number
+  profit: number
+}
+
+interface Forecast {
+  id: number
+  brand_id: number
+  year: number
+  quarter: number
+  revenue: number
+  profit: number
+}
+
+interface Actual {
+  id: number
+  brand_id: number
+  year: number
+  quarter: number
+  revenue: number
+  profit: number
+  is_closed: boolean
+}
+
+interface DashboardData {
+  year: number
+  quarter: number
+  brand_id: string
+  brand?: {
+    name: string
+    sales_manager_id: string
+  }
+  revenue: number
+  profit: number
+}
+
 export default function DashboardPage() {
-  const currentYear = new Date().getFullYear()
-  const [selectedYear, setSelectedYear] = useState<number>(currentYear)
-  const [selectedBrand, setSelectedBrand] = useState<number | null>(null)
-  const [selectedManager, setSelectedManager] = useState<string | null>(null)
-  const [brands, setBrands] = useState<Brand[]>([])
-  const [salesManagers, setSalesManagers] = useState<SalesManager[]>([])
-  const [forecastData, setForecastData] = useState<ForecastData[]>([])
-  const [actualsData, setActualsData] = useState<ActualsData[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear())
+  const [selectedQuarter, setSelectedQuarter] = useState<number | null>(null)
+  const [selectedBrandId, setSelectedBrandId] = useState<string>('')
+  const [selectedManager, setSelectedManager] = useState<string>('')
+  const [brands, setBrands] = useState<Brand[]>([])
+  const [salesManagers, setSalesManagers] = useState<SalesManager[]>([])
+  const [dashboardData, setDashboardData] = useState<DashboardData[]>([])
+  
+  // Kartlar için state'ler
+  const [summaryData, setSummaryData] = useState({
+    targets: { revenue: 0, profit: 0 },
+    forecasts: { revenue: 0, profit: 0 },
+    actuals: { revenue: 0, profit: 0 }
+  })
+  
+  // Grafikler için state'ler
+  const [chartData, setChartData] = useState({
+    targets: { revenue: 0, profit: 0 },
+    forecasts: { revenue: 0, profit: 0 },
+    actuals: { revenue: 0, profit: 0 }
+  })
 
-  // İlk yüklemede ve yıl değiştiğinde tüm verileri getir
+  // Sayfa yüklendiğinde ve filtreler değiştiğinde özet verileri getir
   useEffect(() => {
-    fetchAllData()
-  }, [selectedYear])
+    fetchSummaryData()
+  }, [selectedYear, selectedQuarter, selectedManager, selectedBrandId])
+
+  // Filtre değişikliklerinde grafik verilerini güncelle
+  useEffect(() => {
+    fetchChartData()
+  }, [selectedYear, selectedQuarter, selectedManager, selectedBrandId])
 
   // Satış müdürü değiştiğinde markaları güncelle
   useEffect(() => {
     fetchBrands()
   }, [selectedManager])
 
-  const fetchAllData = async () => {
-    setLoading(true)
-    setError(null)
-    
+  // Özet kartları için veri çekme
+  const fetchSummaryData = async () => {
     try {
+      setLoading(true)
+      
       // Satış müdürlerini getir
-      const { data: managersData, error: managersError } = await supabase
+      const { data: managers, error: managersError } = await supabase
         .from('profiles')
         .select('id, full_name')
         .eq('role', 'sales_manager')
         .order('full_name')
 
       if (managersError) throw managersError
-      setSalesManagers(managersData || [])
+      setSalesManagers(managers || [])
 
       // Markaları getir
-      const { data: brandsData, error: brandsError } = await supabase
+      let brandsQuery = supabase
         .from('brands')
-        .select('id, name')
-        .order('name')
+        .select('id, name, sales_manager_id')
 
+      if (selectedManager) {
+        brandsQuery = brandsQuery.eq('sales_manager_id', selectedManager)
+      }
+
+      const { data: brandsData, error: brandsError } = await brandsQuery
       if (brandsError) throw brandsError
       setBrands(brandsData || [])
+      
+      // Hedefler toplamı
+      let targetsQuery = supabase
+        .from('targets')
+        .select('revenue, profit, brand_id')
+        .eq('year', selectedYear)
 
-      // Forecast verilerini getir
-      const { data: forecastResult, error: forecastError } = await supabase
+      if (selectedQuarter) {
+        targetsQuery = targetsQuery.eq('quarter', selectedQuarter)
+      }
+      if (selectedBrandId) {
+        targetsQuery = targetsQuery.eq('brand_id', selectedBrandId)
+      }
+      if (selectedManager) {
+        const managerBrandIds = brandsData
+          ?.filter(b => b.sales_manager_id === selectedManager)
+          .map(b => b.id)
+        if (managerBrandIds?.length) {
+          targetsQuery = targetsQuery.in('brand_id', managerBrandIds)
+        }
+      }
+      const { data: targets, error: targetsError } = await targetsQuery
+
+      if (targetsError) throw targetsError
+
+      // Forecast toplamı
+      let forecastsQuery = supabase
         .from('forecasts')
-        .select('*')
+        .select('revenue, profit, brand_id')
         .eq('year', selectedYear)
 
-      if (forecastError) throw forecastError
-      setForecastData(forecastResult || [])
+      if (selectedQuarter) {
+        forecastsQuery = forecastsQuery.eq('quarter', selectedQuarter)
+      }
+      if (selectedBrandId) {
+        forecastsQuery = forecastsQuery.eq('brand_id', selectedBrandId)
+      }
+      if (selectedManager) {
+        const managerBrandIds = brandsData
+          ?.filter(b => b.sales_manager_id === selectedManager)
+          .map(b => b.id)
+        if (managerBrandIds?.length) {
+          forecastsQuery = forecastsQuery.in('brand_id', managerBrandIds)
+        }
+      }
+      const { data: forecasts, error: forecastsError } = await forecastsQuery
 
-      // Gerçekleşen verileri getir
-      const { data: actualsResult, error: actualsError } = await supabase
+      if (forecastsError) throw forecastsError
+
+      // Gerçekleşen toplamı
+      let actualsQuery = supabase
         .from('actuals')
-        .select('*')
+        .select('revenue, profit, brand_id')
         .eq('year', selectedYear)
+
+      if (selectedQuarter) {
+        actualsQuery = actualsQuery.eq('quarter', selectedQuarter)
+      }
+      if (selectedBrandId) {
+        actualsQuery = actualsQuery.eq('brand_id', selectedBrandId)
+      }
+      if (selectedManager) {
+        const managerBrandIds = brandsData
+          ?.filter(b => b.sales_manager_id === selectedManager)
+          .map(b => b.id)
+        if (managerBrandIds?.length) {
+          actualsQuery = actualsQuery.in('brand_id', managerBrandIds)
+        }
+      }
+      const { data: actuals, error: actualsError } = await actualsQuery
 
       if (actualsError) throw actualsError
-      setActualsData(actualsResult || [])
+
+      // Toplamları hesapla
+      const calculateTotals = (data: any[]) => {
+        return data.reduce((acc, item) => ({
+          revenue: acc.revenue + Number(item.revenue),
+          profit: acc.profit + Number(item.profit)
+        }), { revenue: 0, profit: 0 })
+      }
+
+      setSummaryData({
+        targets: calculateTotals(targets || []),
+        forecasts: calculateTotals(forecasts || []),
+        actuals: calculateTotals(actuals || [])
+      })
 
     } catch (err: any) {
-      setError('Veriler alınırken bir hata oluştu: ' + err.message)
+      console.error('Özet veriler alınırken hata:', err.message)
+      setError('Veriler alınırken bir hata oluştu')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Grafikler için filtrelenmiş veri çekme
+  const fetchChartData = async () => {
+    try {
+      let query = supabase
+        .from('brands')
+        .select(`
+          id,
+          name,
+          targets!left(revenue, profit, year, quarter),
+          forecasts!left(revenue, profit, year, quarter),
+          actuals!left(revenue, profit, year, quarter)
+        `)
+
+      // Satış müdürü filtresi
+      if (selectedManager) {
+        query = query.eq('sales_manager_id', selectedManager)
+      }
+
+      // Marka filtresi
+      if (selectedBrandId) {
+        query = query.eq('id', selectedBrandId)
+      }
+
+      const { data, error } = await query
+
+      if (error) throw error
+
+      // Verileri topla
+      const totals = data?.reduce((acc, brand) => {
+        const calculateSum = (items: any[]) => items?.reduce((sum, item) => {
+          // Yıl ve çeyrek kontrolü ekle
+          if (item && 
+              Number(item.year) === selectedYear && 
+              (!selectedQuarter || Number(item.quarter) === selectedQuarter)) {
+            return {
+              revenue: sum.revenue + Number(item.revenue || 0),
+              profit: sum.profit + Number(item.profit || 0)
+            }
+          }
+          return sum
+        }, { revenue: 0, profit: 0 })
+
+        const brandTargets = calculateSum(brand.targets || [])
+        const brandForecasts = calculateSum(brand.forecasts || [])
+        const brandActuals = calculateSum(brand.actuals || [])
+
+        return {
+          targets: {
+            revenue: acc.targets.revenue + brandTargets.revenue,
+            profit: acc.targets.profit + brandTargets.profit
+          },
+          forecasts: {
+            revenue: acc.forecasts.revenue + brandForecasts.revenue,
+            profit: acc.forecasts.profit + brandForecasts.profit
+          },
+          actuals: {
+            revenue: acc.actuals.revenue + brandActuals.revenue,
+            profit: acc.actuals.profit + brandActuals.profit
+          }
+        }
+      }, {
+        targets: { revenue: 0, profit: 0 },
+        forecasts: { revenue: 0, profit: 0 },
+        actuals: { revenue: 0, profit: 0 }
+      }) || {
+        targets: { revenue: 0, profit: 0 },
+        forecasts: { revenue: 0, profit: 0 },
+        actuals: { revenue: 0, profit: 0 }
+      }
+
+      setChartData(totals)
+
+    } catch (err: any) {
+      console.error('Grafik verileri alınırken hata:', err.message)
     }
   }
 
@@ -139,113 +348,69 @@ export default function DashboardPage() {
 
       if (error) throw error
       setBrands(data || [])
-      setSelectedBrand(null) // Markalar değiştiğinde seçili markayı sıfırla
+      setSelectedBrandId('') // Markalar değiştiğinde seçili markayı sıfırla
 
     } catch (err: any) {
       console.error('Markalar alınırken hata:', err.message)
     }
   }
 
-  // Filtrelenmiş verileri hesapla
-  const getFilteredData = () => {
-    let filteredForecasts = forecastData
-    let filteredActuals = actualsData
-
-    if (selectedBrand) {
-      filteredForecasts = filteredForecasts.filter(f => f.brand_id === selectedBrand)
-      filteredActuals = filteredActuals.filter(a => a.brand_id === selectedBrand)
-    } else if (selectedManager) {
-      // Seçili müdüre ait marka ID'lerini al
-      const managerBrandIds = brands.map(b => b.id)
-      filteredForecasts = filteredForecasts.filter(f => managerBrandIds.includes(f.brand_id))
-      filteredActuals = filteredActuals.filter(a => managerBrandIds.includes(a.brand_id))
-    }
-
-    return {
-      forecasts: filteredForecasts,
-      actuals: filteredActuals
-    }
+  // Para birimi formatı için yardımcı fonksiyon
+  const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat('tr-TR', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
+    }).format(value)
   }
 
-  // Genel toplam değerleri hesapla
-  const forecastTotals = forecastData.reduce((acc, curr) => ({
-    revenue: acc.revenue + (curr.revenue || 0),
-    profit: acc.profit + (curr.profit || 0)
-  }), { revenue: 0, profit: 0 })
-
-  const actualsTotals = actualsData.reduce((acc, curr) => ({
-    revenue: acc.revenue + (curr.revenue || 0),
-    profit: acc.profit + (curr.profit || 0)
-  }), { revenue: 0, profit: 0 })
-
-  // Genel marjları hesapla
-  const forecastMargin = forecastTotals.revenue > 0 
-    ? (forecastTotals.profit / forecastTotals.revenue) * 100 
-    : 0
-
-  const actualsMargin = actualsTotals.revenue > 0 
-    ? (actualsTotals.profit / actualsTotals.revenue) * 100 
-    : 0
-
-  // Filtrelenmiş verileri al
-  const { forecasts: filteredForecasts, actuals: filteredActuals } = getFilteredData()
-
-  // Filtrelenmiş verilerden toplamları hesapla
-  const filteredForecastTotals = filteredForecasts.reduce((acc, curr) => ({
-    revenue: acc.revenue + (curr.revenue || 0),
-    profit: acc.profit + (curr.profit || 0)
-  }), { revenue: 0, profit: 0 })
-
-  const filteredActualsTotals = filteredActuals.reduce((acc, curr) => ({
-    revenue: acc.revenue + (curr.revenue || 0),
-    profit: acc.profit + (curr.profit || 0)
-  }), { revenue: 0, profit: 0 })
-
-  // Grafik verilerini hazırla - filtrelenmiş verilerle
-  const chartData = {
+  // Grafik verilerini hazırla
+  const chartDataConfig = {
     labels: ['Ciro', 'Karlılık'],
     datasets: [
       {
         label: 'Hedef',
         data: [
-          filteredForecastTotals.revenue * 1.2,
-          filteredForecastTotals.profit * 1.2
+          chartData.targets.revenue,
+          chartData.targets.profit
         ],
         backgroundColor: 'rgba(59, 130, 246, 0.5)', // blue-600
       },
       {
         label: 'Gerçekleşen',
         data: [
-          filteredActualsTotals.revenue,
-          filteredActualsTotals.profit
+          chartData.actuals.revenue,
+          chartData.actuals.profit
         ],
         backgroundColor: 'rgba(34, 197, 94, 0.5)', // green-600
       }
     ],
   }
 
-  const chartData2 = {
+  const chartData2Config = {
     labels: ['Ciro', 'Karlılık'],
     datasets: [
       {
         label: 'Hedef',
         data: [
-          filteredForecastTotals.revenue * 1.2,
-          filteredForecastTotals.profit * 1.2
+          chartData.targets.revenue,
+          chartData.targets.profit
         ],
         backgroundColor: 'rgba(59, 130, 246, 0.5)', // blue-600
       },
       {
         label: 'Forecast',
         data: [
-          filteredForecastTotals.revenue,
-          filteredForecastTotals.profit
+          chartData.forecasts.revenue,
+          chartData.forecasts.profit
         ],
         backgroundColor: 'rgba(99, 102, 241, 0.5)', // indigo-600
       }
     ],
   }
 
+  // Grafik seçenekleri
   const chartOptions = {
     responsive: true,
     plugins: {
@@ -264,7 +429,12 @@ export default function DashboardPage() {
         ticks: {
           callback: function(this: any, tickValue: string | number) {
             if (typeof tickValue === 'number') {
-              return tickValue.toLocaleString('tr-TR') + ' ₺'
+              return new Intl.NumberFormat('tr-TR', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+              }).format(tickValue)
             }
             return tickValue
           }
@@ -291,13 +461,52 @@ export default function DashboardPage() {
         ticks: {
           callback: function(this: any, tickValue: string | number) {
             if (typeof tickValue === 'number') {
-              return tickValue.toLocaleString('tr-TR') + ' ₺'
+              return new Intl.NumberFormat('tr-TR', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+              }).format(tickValue)
             }
             return tickValue
           }
         }
       }
     }
+  }
+
+  // Kar marjı hesaplamaları
+  const calculateMargin = (revenue: number, profit: number) => {
+    return revenue > 0 ? (profit / revenue) * 100 : 0
+  }
+
+  const margins = {
+    target: calculateMargin(summaryData.targets.revenue, summaryData.targets.profit),
+    forecast: calculateMargin(summaryData.forecasts.revenue, summaryData.forecasts.profit),
+    actual: calculateMargin(summaryData.actuals.revenue, summaryData.actuals.profit)
+  }
+
+  // Filtreleme fonksiyonunu güncelle
+  const getFilteredData = () => {
+    let filtered = dashboardData
+
+    if (selectedYear) {
+      filtered = filtered.filter(item => item.year === selectedYear)
+    }
+
+    if (selectedQuarter) {
+      filtered = filtered.filter(item => item.quarter === selectedQuarter)
+    }
+
+    if (selectedBrandId) {
+      filtered = filtered.filter(item => item.brand_id === selectedBrandId)
+    }
+
+    if (selectedManager) {
+      filtered = filtered.filter(item => item.brand?.sales_manager_id === selectedManager)
+    }
+
+    return filtered
   }
 
   if (loading) {
@@ -327,19 +536,19 @@ export default function DashboardPage() {
             <div>
               <p className="text-sm text-gray-500">Hedef</p>
               <p className="text-xl font-semibold text-blue-600">
-                {(forecastTotals.revenue * 1.2).toLocaleString('tr-TR')} ₺
+                {formatCurrency(summaryData.targets.revenue)}
               </p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Forecast</p>
               <p className="text-xl font-semibold text-indigo-600">
-                {forecastTotals.revenue.toLocaleString('tr-TR')} ₺
+                {formatCurrency(summaryData.forecasts.revenue)}
               </p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Gerçekleşen</p>
               <p className="text-xl font-semibold text-green-600">
-                {actualsTotals.revenue.toLocaleString('tr-TR')} ₺
+                {formatCurrency(summaryData.actuals.revenue)}
               </p>
             </div>
           </div>
@@ -352,19 +561,19 @@ export default function DashboardPage() {
             <div>
               <p className="text-sm text-gray-500">Hedef</p>
               <p className="text-xl font-semibold text-blue-600">
-                {(forecastTotals.profit * 1.2).toLocaleString('tr-TR')} ₺
+                {formatCurrency(summaryData.targets.profit)}
               </p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Forecast</p>
               <p className="text-xl font-semibold text-indigo-600">
-                {forecastTotals.profit.toLocaleString('tr-TR')} ₺
+                {formatCurrency(summaryData.forecasts.profit)}
               </p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Gerçekleşen</p>
               <p className="text-xl font-semibold text-green-600">
-                {actualsTotals.profit.toLocaleString('tr-TR')} ₺
+                {formatCurrency(summaryData.actuals.profit)}
               </p>
             </div>
           </div>
@@ -377,19 +586,89 @@ export default function DashboardPage() {
             <div>
               <p className="text-sm text-gray-500">Hedef</p>
               <p className="text-xl font-semibold text-blue-600">
-                %{(forecastMargin * 1.2).toFixed(2)}
+                %{margins.target.toFixed(2)}
               </p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Forecast</p>
               <p className="text-xl font-semibold text-indigo-600">
-                %{forecastMargin.toFixed(2)}
+                %{margins.forecast.toFixed(2)}
               </p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Gerçekleşen</p>
               <p className="text-xl font-semibold text-green-600">
-                %{actualsMargin.toFixed(2)}
+                %{margins.actual.toFixed(2)}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Detay Bilgileri */}
+      <div className="bg-white p-6 rounded-lg shadow">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Seçili Filtre Bilgileri */}
+          <div>
+            <h4 className="text-sm font-medium text-gray-500 mb-2">Seçili Filtreler</h4>
+            <div className="space-y-1">
+              <p className="text-sm">
+                <span className="font-medium">Satış Müdürü:</span>{' '}
+                {selectedManager 
+                  ? salesManagers.find(m => m.id === selectedManager)?.full_name || 'Bulunamadı'
+                  : 'Tümü'}
+              </p>
+              <p className="text-sm">
+                <span className="font-medium">Marka:</span>{' '}
+                {selectedBrandId 
+                  ? brands.find(b => b.id === parseInt(selectedBrandId))?.name || 'Bulunamadı'
+                  : 'Tümü'}
+              </p>
+              <p className="text-sm">
+                <span className="font-medium">Çeyrek:</span>{' '}
+                {selectedQuarter ? `${selectedQuarter}. Çeyrek` : 'Tüm Çeyrekler'}
+              </p>
+            </div>
+          </div>
+
+          {/* Hedef ve Gerçekleşen */}
+          <div>
+            <h4 className="text-sm font-medium text-gray-500 mb-2">Hedef ve Gerçekleşen</h4>
+            <div className="space-y-1">
+              <p className="text-sm">
+                <span className="font-medium">Hedef:</span>{' '}
+                {formatCurrency(summaryData.targets.revenue)}
+              </p>
+              <p className="text-sm">
+                <span className="font-medium">Gerçekleşen:</span>{' '}
+                {formatCurrency(summaryData.actuals.revenue)}
+              </p>
+              <p className="text-sm">
+                <span className="font-medium">Gerçekleşme Oranı:</span>{' '}
+                {summaryData.targets.revenue > 0 
+                  ? `%${((summaryData.actuals.revenue / summaryData.targets.revenue) * 100).toFixed(2)}`
+                  : '%0'}
+              </p>
+            </div>
+          </div>
+
+          {/* Forecast Bilgileri */}
+          <div>
+            <h4 className="text-sm font-medium text-gray-500 mb-2">Forecast Bilgileri</h4>
+            <div className="space-y-1">
+              <p className="text-sm">
+                <span className="font-medium">Forecast:</span>{' '}
+                {formatCurrency(summaryData.forecasts.revenue)}
+              </p>
+              <p className="text-sm">
+                <span className="font-medium">Hedefe Göre Forecast Oranı:</span>{' '}
+                {summaryData.targets.revenue > 0 
+                  ? `%${((summaryData.forecasts.revenue / summaryData.targets.revenue) * 100).toFixed(2)}`
+                  : '%0'}
+              </p>
+              <p className="text-sm">
+                <span className="font-medium">Forecast Kar Marjı:</span>{' '}
+                {`%${margins.forecast.toFixed(2)}`}
               </p>
             </div>
           </div>
@@ -399,18 +678,18 @@ export default function DashboardPage() {
       {/* Filtreler */}
       <div className="bg-white p-4 rounded-lg shadow">
         <h3 className="text-lg font-medium text-gray-900 mb-4">Detaylı Filtreler</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {/* Yıl Filtresi */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700">
               Yıl
             </label>
             <select
               value={selectedYear}
               onChange={(e) => setSelectedYear(Number(e.target.value))}
-              className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             >
-              {Array.from({ length: 7 }, (_, i) => currentYear + i).map((year) => (
+              {Array.from({ length: 7 }, (_, i) => new Date().getFullYear() + i).map((year) => (
                 <option key={year} value={year}>
                   {year}
                 </option>
@@ -418,18 +697,34 @@ export default function DashboardPage() {
             </select>
           </div>
 
+          {/* Çeyrek Filtresi */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700">
+              Çeyrek
+            </label>
+            <select
+              value={selectedQuarter || ''}
+              onChange={(e) => setSelectedQuarter(e.target.value ? Number(e.target.value) : null)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+            >
+              <option value="">Tüm Çeyrekler</option>
+              {[1, 2, 3, 4].map((quarter) => (
+                <option key={quarter} value={quarter}>
+                  {quarter}. Çeyrek
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Satış Müdürü Filtresi */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700">
               Satış Müdürü
             </label>
             <select
-              value={selectedManager || ''}
-              onChange={(e) => {
-                setSelectedManager(e.target.value || null)
-                setSelectedBrand(null) // Satış müdürü değiştiğinde seçili markayı sıfırla
-              }}
-              className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+              value={selectedManager}
+              onChange={(e) => setSelectedManager(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             >
               <option value="">Tüm Satış Müdürleri</option>
               {salesManagers.map((manager) => (
@@ -442,13 +737,13 @@ export default function DashboardPage() {
 
           {/* Marka Filtresi */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700">
               Marka
             </label>
             <select
-              value={selectedBrand || ''}
-              onChange={(e) => setSelectedBrand(e.target.value ? Number(e.target.value) : null)}
-              className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+              value={selectedBrandId}
+              onChange={(e) => setSelectedBrandId(e.target.value)}
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             >
               <option value="">Tüm Markalar</option>
               {brands.map((brand) => (
@@ -464,10 +759,10 @@ export default function DashboardPage() {
       {/* Grafikler */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white p-4 rounded-lg shadow">
-          <Bar options={chartOptions} data={chartData} />
+          <Bar options={chartOptions} data={chartDataConfig} />
         </div>
         <div className="bg-white p-4 rounded-lg shadow">
-          <Bar options={chartOptions2} data={chartData2} />
+          <Bar options={chartOptions2} data={chartData2Config} />
         </div>
       </div>
     </div>

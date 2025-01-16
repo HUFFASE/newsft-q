@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
+import { utils, write, read } from 'xlsx'
+import toast from 'react-hot-toast'
 
 interface ActualsData {
   id: number
@@ -26,6 +28,14 @@ interface Brand {
 interface SalesManager {
   id: string
   full_name: string
+}
+
+interface ExcelRow {
+  'Marka Adı': string
+  'Yıl': number
+  'Çeyrek': number
+  'Gelir': number
+  'Kar': number
 }
 
 export default function ActualsPage() {
@@ -216,9 +226,11 @@ export default function ActualsPage() {
         if (insertError) throw insertError
       }
 
-      await fetchAllData()
       setIsModalOpen(false)
       setError(null)
+      // Modal kapandıktan sonra verileri yeniden yükle
+      await fetchAllData()
+      toast.success('Veriler başarıyla kaydedildi')
     } catch (err: any) {
       console.error('Error adding/updating actual:', err.message)
       setError('Veri kaydedilirken bir hata oluştu: ' + err.message)
@@ -253,6 +265,120 @@ export default function ActualsPage() {
       await fetchAllData()
     } catch (err: any) {
       setError('Veri silinirken bir hata oluştu: ' + err.message)
+    }
+  }
+
+  // Excel şablon oluşturma fonksiyonu
+  const generateExcelTemplate = async () => {
+    try {
+      // Tüm markaları çek
+      const { data: brands, error: brandsError } = await supabase
+        .from('brands')
+        .select('*')
+        .order('name')
+
+      if (brandsError) throw brandsError
+
+      const currentYear = new Date().getFullYear()
+      const templateData: ExcelRow[] = []
+
+      // Her marka için 4 çeyreklik veri oluştur
+      brands?.forEach(brand => {
+        for (let quarter = 1; quarter <= 4; quarter++) {
+          templateData.push({
+            'Marka Adı': brand.name,
+            'Yıl': currentYear,
+            'Çeyrek': quarter,
+            'Gelir': 0,
+            'Kar': 0
+          })
+        }
+      })
+
+      // Excel dosyası oluştur
+      const ws = utils.json_to_sheet(templateData)
+      const wb = utils.book_new()
+      utils.book_append_sheet(wb, ws, 'Gerçekleşenler')
+
+      // Dosyayı indir
+      const excelBuffer = write(wb, { bookType: 'xlsx', type: 'array' })
+      const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `gerceklesenler_sablon_${currentYear}.xlsx`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+
+      toast.success('Excel şablonu başarıyla indirildi')
+    } catch (error) {
+      console.error('Şablon oluşturulurken hata:', error)
+      toast.error('Şablon oluşturulurken bir hata oluştu')
+    }
+  }
+
+  // Excel'den veri yükleme fonksiyonu
+  const handleExcelUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    try {
+      const file = event.target.files?.[0]
+      if (!file) return
+
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer)
+          const workbook = read(data, { type: 'array' })
+          const worksheet = workbook.Sheets[workbook.SheetNames[0]]
+          const jsonData = utils.sheet_to_json(worksheet) as ExcelRow[]
+
+          // Markaları çek
+          const { data: brands, error: brandsError } = await supabase
+            .from('brands')
+            .select('*')
+
+          if (brandsError) throw brandsError
+
+          const brandMap = new Map(brands.map(b => [b.name, b.id]))
+          const actualsToInsert = []
+
+          for (const row of jsonData) {
+            const brandId = brandMap.get(row['Marka Adı'])
+            if (!brandId) {
+              toast.error(`Marka bulunamadı: ${row['Marka Adı']}`)
+              continue
+            }
+
+            actualsToInsert.push({
+              brand_id: brandId,
+              year: row['Yıl'],
+              quarter: row['Çeyrek'],
+              revenue: row['Gelir'],
+              profit: row['Kar']
+            })
+          }
+
+          // Verileri kaydet
+          const { error: insertError } = await supabase
+            .from('actuals')
+            .upsert(actualsToInsert, {
+              onConflict: 'brand_id,year,quarter'
+            })
+
+          if (insertError) throw insertError
+
+          toast.success('Veriler başarıyla yüklendi')
+          fetchAllData() // Tabloyu güncelle
+        } catch (error) {
+          console.error('Veri yüklenirken hata:', error)
+          toast.error('Veriler yüklenirken bir hata oluştu')
+        }
+      }
+      reader.readAsArrayBuffer(file)
+    } catch (error) {
+      console.error('Dosya okunurken hata:', error)
+      toast.error('Dosya okunurken bir hata oluştu')
     }
   }
 
@@ -360,7 +486,17 @@ export default function ActualsPage() {
                 <label className="block text-sm font-medium text-gray-700">Marka</label>
                 <select
                   value={formData.brand_id}
-                  onChange={(e) => setFormData({ ...formData, brand_id: e.target.value })}
+                  onChange={(e) => {
+                    // Marka değiştiğinde tüm form verilerini sıfırla
+                    setFormData({
+                      brand_id: e.target.value,
+                      year: selectedYear,
+                      quarter: 1,
+                      revenue: 0,
+                      profit: 0,
+                      is_closed: false
+                    })
+                  }}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
                   required
                 >
@@ -515,6 +651,28 @@ export default function ActualsPage() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Butonları içeren div */}
+      <div className="flex justify-between items-center mb-4">
+        <div className="flex space-x-2">
+          <button
+            onClick={generateExcelTemplate}
+            className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+          >
+            Excel Şablonu İndir
+          </button>
+          <label className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+            Excel'den Yükle
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleExcelUpload}
+              className="hidden"
+            />
+          </label>
+        </div>
+        {/* Mevcut butonlar */}
       </div>
     </div>
   )
