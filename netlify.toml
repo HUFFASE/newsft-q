@@ -1,6 +1,7 @@
-[build]
-command = "npm install && NODE_ENV=production npm run build"
-publish = ".next"
+   [build]
+   command = "npm cache clean --force && npm install --force && npm run build"
+   publish = ".next"
 
-[[plugins]]
-package = "@netlify/plugin-nextjs"
+   [build.environment]
+   NODE_VERSION = "22.12.0"
+   NPM_FLAGS = "--legacy-peer-deps --force"
